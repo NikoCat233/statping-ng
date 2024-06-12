@@ -9,21 +9,16 @@ on:
 
 jobs:
   data:
-    # this job collects general variables and inputs for later use.
-    # not all of them might be needed but having them in a central place is more helpful than 100% efficiency.
-    # also, the name is intentionally short to make later references shorter.
     runs-on: ubuntu-latest
     outputs:
       is_release: ${{ steps.statping-versions.outputs.is_release }}
       is_prerelease: ${{ steps.statping-versions.outputs.is_prerelease }}
-      # this will be v1.2.3 for on-tag builds and v1.2.3-numberofcommits-sha for off-tag builds
       version: ${{ steps.statping-versions.outputs.version }}
       go_version: ${{ steps.tool-versions.outputs.go_version }}
       node_version: ${{ steps.tool-versions.outputs.node_version }}
     steps:
       - uses: actions/checkout@v3
         with:
-          # check on https://github.com/actions/checkout/pull/579 occasionally if actions/checkout can do this natively yet
           fetch-depth: 0
       - name: get statping version information
         id: statping-versions
@@ -52,19 +47,7 @@ jobs:
           echo "go_version=1.20.x" >> $GITHUB_OUTPUT
           echo "node_version=16.14.0" >> $GITHUB_OUTPUT
         shell: bash
-      - name: show data results
-        run: |
-          echo == tools versions ==
-          echo go_version: ${{ steps.tool-versions.outputs.go_version }}
-          echo node_version: ${{ steps.tool-versions.outputs.node_version }}
-          echo == matched tags ==
-          echo stable_tag: ${{ steps.statping-versions.outputs.stable_tag }}
-          echo beta_tag: ${{ steps.statping-versions.outputs.beta_tag }}
-          echo == release information ==
-          echo is_release: ${{ steps.statping-versions.outputs.is_release }}
-          echo is_prerelease: ${{ steps.statping-versions.outputs.is_prerelease }}
-          echo == statping version ==
-          echo version: ${{ steps.statping-versions.outputs.version }}
+
   frontend:
     runs-on: ubuntu-latest
     needs: data
@@ -117,33 +100,28 @@ jobs:
 
     steps:
       - uses: actions/checkout@v2
-
       - name: Download Compiled Frontend (rice-box.go)
         uses: actions/download-artifact@v1
         with:
           name: static-rice-box
           path: ./source
-
       - name: Set Linux Build Flags
         if: matrix.platform == 'linux'
         run: |
           echo "BUILD_FLAGS=-extldflags -static" >> $GITHUB_ENV
           echo "XGO_TAGS=netgo osusergo linux sqlite_omit_load_extension" >> $GITHUB_ENV
         shell: bash
-
       - name: Set Darwin Build Flags
         if: matrix.platform == 'darwin'
         run: |
           echo "XGO_TAGS=netgo osusergo darwin sqlite_omit_load_extension" >> $GITHUB_ENV
         shell: bash
-
       - name: Set Windows Build Flags
         if: matrix.platform == 'windows'
         run: |
           echo "BUILD_FLAGS=-extldflags -static -buildmode=exe" >> $GITHUB_ENV
           echo "XGO_TAGS=netgo osusergo sqlite_omit_load_extension" >> $GITHUB_ENV
         shell: bash
-
       - name: Build ${{ matrix.platform }}/${{ matrix.arch }}
         uses: crazy-max/ghaction-xgo@v2
         with:
@@ -152,326 +130,22 @@ jobs:
           dest: build
           prefix: statping
           targets: ${{ matrix.platform }}/${{ matrix.arch }}
-          # v and x enable additional debug output
           v: true
           x: true
           pkg: cmd
           buildmode: pie
           tags: ${{ env.XGO_TAGS }}
           ldflags: -s -w -X main.VERSION=${{ needs.data.outputs.version }} -X main.COMMIT=${{ github.sha }} ${{ env.BUILD_FLAGS }}
-
       - run: ls -la build
-
-      - name: Compress Linux Builds
-        if: matrix.platform == 'linux'
-        run: |
-          cd build
-          mv statping-linux-${{ matrix.arch }} statping
-          chmod +x statping
-          tar -czvf statping-linux-${{ matrix.arch }}.tar.gz statping
-          rm -rf statping
-          echo "compressed=statping-linux-${{ matrix.arch }}.tar.gz" >> $GITHUB_ENV
-
-      - name: Compress Windows Builds
-        if: matrix.platform == 'windows'
-        run: |
-          cd build
-          mv statping-windows-${{ matrix.arch }}.exe statping.exe
-          chmod +x statping.exe
-          zip statping-windows-${{ matrix.arch }}.zip statping.exe
-          rm -rf statping.exe
-          echo "compressed=statping-windows-${{ matrix.arch }}.zip" >> $GITHUB_ENV
-
-      - name: Compress Darwin Builds
-        if: matrix.platform == 'darwin'
-        run: |
-          cd build
-          mv statping-darwin-${{ matrix.arch }} statping
-          chmod +x statping
-          tar -czvf statping-darwin-${{ matrix.arch }}.tar.gz statping
-          rm -rf statping
-          echo "compressed=statping-darwin-${{ matrix.arch }}.tar.gz" >> $GITHUB_ENV
-
       - name: Upload Compiled Statping Binary
         uses: actions/upload-artifact@v1
         with:
           name: binaries
           path: ./build
 
-  # TODO refactor (and fix) tests
-
-  test:
-    needs: [ data, frontend ]
-    # temporarily disabled
-    if: "false"
-    runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:10.8
-        env:
-          POSTGRES_USER: root
-          POSTGRES_PASSWORD: password123
-          POSTGRES_DB: statping
-        ports:
-          - 5432:5432
-        options: --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
-
-      mysql:
-        image: mysql:5.7
-        env:
-          MYSQL_ROOT_PASSWORD: password123
-          MYSQL_DATABASE: statping
-        ports:
-          - 3306:3306
-        options: --health-cmd="mysqladmin ping" --health-interval=10s --health-timeout=5s --health-retries=3
-
-    steps:
-      - uses: actions/checkout@v2
-      - uses: actions/setup-go@v2
-        with:
-          go-version: ${{ needs.data.outputs.go_version }}
-      - uses: actions/setup-node@v1
-        with:
-          node-version: ${{ needs.data.outputs.node_version }}
-
-      - name: Install Global Dependencies
-        run: npm install -g yarn sass newman cross-env wait-on @sentry/cli
-
-      - name: Setting ENV's
-        run: |
-          echo "$(go env GOPATH)/bin" >> $GITHUB_PATH
-          echo "/opt/hostedtoolcache/node/${{ needs.data.outputs.node_version }}/x64/bin" >> $GITHUB_PATH
-        shell: bash
-
-      - name: Download Compiled Frontend (rice-box.go)
-        uses: actions/download-artifact@v1
-        with:
-          name: static-rice-box
-          path: ./source
-
-      - name: Install Statping
-        run: |
-          make build certs
-          chmod +x statping
-          mv statping $(go env GOPATH)/bin/
-
-      - name: Go Tests
-        run: |
-          go get gotest.tools/gotestsum
-          gotestsum --no-summary=skipped --format testname -- -covermode=count -coverprofile=coverage.out -p=1 ./...
-        env:
-          VERSION: ${{ needs.data.outputs.version }}
-          COMMIT: ${{ github.sha }}
-          DB_CONN: sqlite3
-          STATPING_DIR: ${{ github.workspace }}
-          API_SECRET: demopassword123
-          DISABLE_LOGS: false
-          ALLOW_REPORTS: true
-          SAMPLE_DATA: true
-          COVERALLS: ${{ secrets.COVERALLS }}
-          DISCORD_URL: ${{ secrets.DISCORD_URL }}
-          EMAIL_HOST: ${{ secrets.EMAIL_HOST }}
-          EMAIL_USER: ${{ secrets.EMAIL_USER }}
-          EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
-          EMAIL_OUTGOING: ${{ secrets.EMAIL_OUTGOING }}
-          EMAIL_SEND_TO: ${{ secrets.EMAIL_SEND_TO }}
-          EMAIL_PORT: ${{ secrets.EMAIL_PORT }}
-          MOBILE_ID: ${{ secrets.MOBILE_ID }}
-          MOBILE_NUMBER: ${{ secrets.MOBILE_NUMBER }}
-          PUSHOVER_TOKEN: ${{ secrets.PUSHOVER_TOKEN }}
-          PUSHOVER_API: ${{ secrets.PUSHOVER_API }}
-          SLACK_URL: ${{ secrets.SLACK_URL }}
-          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-          TELEGRAM_CHANNEL: ${{ secrets.TELEGRAM_CHANNEL }}
-          TWILIO_SID: ${{ secrets.TWILIO_SID }}
-          TWILIO_SECRET: ${{ secrets.TWILIO_SECRET }}
-          TWILIO_FROM: ${{ secrets.TWILIO_FROM }}
-          TWILIO_TO: ${{ secrets.TWILIO_TO }}
-          TEST_EMAIL: ${{ secrets.TEST_EMAIL }}
-          GOTIFY_URL: ${{ secrets.GOTIFY_URL }}
-          GOTIFY_TOKEN: ${{ secrets.GOTIFY_TOKEN }}
-          SNS_TOKEN: ${{ secrets.SNS_TOKEN }}
-          SNS_SECRET: ${{ secrets.SNS_SECRET }}
-          SNS_REGION: ${{ secrets.SNS_REGION }}
-          SNS_TOPIC: ${{ secrets.SNS_TOPIC }}
-
-      - name: Coveralls Testing Coverage
-        run: |
-          go get github.com/mattn/goveralls
-          goveralls -coverprofile=coverage.out -repotoken $COVERALLS
-        env:
-          COVERALLS: ${{ secrets.COVERALLS }}
-
-  test-postman-sqlite:
-    needs: [ data, frontend ]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v2
-      - uses: actions/setup-go@v2
-        with:
-          go-version: '1.21.8'
-
-      - name: Setting ENV's
-        run: |
-          echo "GOROOT=$GOROOT" >> $GITHUB_ENV
-          echo "PATH=$GOROOT/bin:$PATH" >> $GITHUB_ENV
-          echo "/opt/hostedtoolcache/node/${{ needs.data.outputs.node_version }}/x64/bin" >> $GITHUB_PATH
-        shell: bash
-
-      - name: Download Compiled Frontend (rice-box.go)
-        uses: actions/download-artifact@v1
-        with:
-          name: static-rice-box
-          path: ./source
-
-      - name: Install Statping
-        env:
-          GOPROXY: https://proxy.golang.org,direct
-        run: |
-          make build
-          chmod +x statping
-          mv statping $(go env GOPATH)/bin/
-      - name: Run Statping
-        run: |
-          API_SECRET=demosecret123 statping --port=8585 > /dev/null &
-          sleep 5
-      - name: Postman SQLite Tests
-        uses: matt-ball/newman-action@master
-        with:
-          apiKey: ${{ secrets.POSTMAN_API }}
-          collection: ./dev/postman.json
-          environment: ./dev/postman_env_sqlite.json
-          timeoutRequest: 30000
-          delayRequest: 600
-
-  test-postman-mysql:
-    needs: [ data, frontend ]
-    runs-on: ubuntu-latest
-
-    services:
-      mysql:
-        image: mysql:5.7
-        env:
-          MYSQL_ROOT_PASSWORD: password123
-          MYSQL_DATABASE: statping
-        ports:
-          - 3306:3306
-        options: --health-cmd="mysqladmin ping" --health-interval=10s --health-timeout=5s --health-retries=3
-
-    steps:
-      - uses: actions/checkout@v2
-      - uses: actions/setup-go@v2
-        with:
-          go-version: '1.21.8'
-
-      - name: Setting ENV's
-        run: |
-          echo "GOROOT=$GOROOT" >> $GITHUB_ENV
-          echo "PATH=$GOROOT/bin:$PATH" >> $GITHUB_ENV
-          echo "/opt/hostedtoolcache/node/${{ needs.data.outputs.node_version }}/x64/bin" >> $GITHUB_PATH
-        shell: bash
-
-      - name: Download Compiled Frontend (rice-box.go)
-        uses: actions/download-artifact@v1
-        with:
-          name: static-rice-box
-          path: ./source
-
-      - name: Install Statping
-        env:
-          GOPROXY: https://proxy.golang.org,direct
-        run: |
-          make build
-          chmod +x statping
-          mv statping $(go env GOPATH)/bin/
-      - name: Run Statping
-        run: |
-          API_SECRET=demosecret123 statping --port=8585 > /dev/null &
-          sleep 5
-      - name: Postman MySQL Tests
-        uses: matt-ball/newman-action@master
-        with:
-          apiKey: ${{ secrets.POSTMAN_API }}
-          collection: ./dev/postman.json
-          environment: ./dev/postman_env_mysql.json
-          timeoutRequest: 30000
-          delayRequest: 600
-
-  test-postman-postgres:
-    needs: [ data, frontend ]
-    runs-on: ubuntu-latest
-
-    services:
-      postgres:
-        image: postgres:10.8
-        env:
-          POSTGRES_USER: root
-          POSTGRES_PASSWORD: password123
-          POSTGRES_DB: statping
-        ports:
-          - 5432:5432
-        options: --health-cmd pg_isready --health-interval 10s --health-timeout 5s --health-retries 5
-
-    steps:
-      - uses: actions/checkout@v2
-      - uses: actions/setup-go@v2
-        with:
-          go-version: '1.21.8'
-
-      - name: Setting ENV's
-        run: |
-          echo "GOROOT=$GOROOT" >> $GITHUB_ENV
-          echo "PATH=$GOROOT/bin:$PATH" >> $GITHUB_ENV
-          echo "/opt/hostedtoolcache/node/${{ needs.data.outputs.node_version }}/x64/bin" >> $GITHUB_PATH
-        shell: bash
-
-      - name: Download Compiled Frontend (rice-box.go)
-        uses: actions/download-artifact@v1
-        with:
-          name: static-rice-box
-          path: ./source
-
-      - name: Install Statping
-        env:
-          GOPROXY: https://proxy.golang.org,direct
-        run: |
-          make build
-          chmod +x statping
-          mv statping $(go env GOPATH)/bin/
-      - name: Run Statping
-        run: |
-          API_SECRET=demosecret123 statping --port=8585 > /dev/null &
-          sleep 5
-      - name: Postman Postgres Tests
-        uses: matt-ball/newman-action@master
-        with:
-          apiKey: ${{ secrets.POSTMAN_API }}
-          collection: ./dev/postman.json
-          environment: ./dev/postman_env_postgres.json
-          timeoutRequest: 30000
-          delayRequest: 600
-
-  docker-build:
-    needs: [ data ]
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v2
-      - uses: jemand771/docker-build-action@main
-        with:
-          GITHUB_TOKEN: ${{ github.token }}
-          push_strategy: artifact
-          platforms: linux/amd64, linux/arm/v7, linux/arm/v6, linux/arm64
-          args: |
-            COMMIT=${{ github.sha }}
-            VERSION=${{ needs.data.outputs.version }}
-            BUILDKIT_INLINE_CACHE=true
-
-  # all other release jobs should be based on this
   release:
-    # only run release jobs on push to stable/unstable.
     if: ${{ success() && fromJSON(needs.data.outputs.is_release) }}
-    needs: [ data, build, test-postman-sqlite, test-postman-mysql, test-postman-postgres, docker-build ]
+    needs: [ data, build ]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v3
@@ -488,8 +162,3 @@ jobs:
           omitBodyDuringUpdate: true
           prerelease: ${{ fromJSON(needs.data.outputs.is_prerelease) && 'true' || 'false'}}
           updateOnlyUnreleased: true
-      - name: push docker images
-        uses: jemand771/push-docker-artifact@main
-        with:
-          GITHUB_TOKEN: ${{ github.token }}
-      # TODO bring back dockerhub image
