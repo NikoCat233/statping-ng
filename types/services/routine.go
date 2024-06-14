@@ -623,7 +623,6 @@ func CheckHttp(s *Service, record bool) (*Service, error) {
 
 // RecordSuccess will create a new 'hit' record in the database for a successful/online service
 func RecordSuccess(s *Service) {
-	s.LastOnline = utils.Now()
 	s.Online = true
 	hit := &hits.Hit{
 		Service:   s.Id,
@@ -641,6 +640,7 @@ func RecordSuccess(s *Service) {
 	metrics.Gauge("online", 1., s.Name, s.Type)
 	metrics.Inc("success", s.Name)
 	sendSuccess(s)
+	s.LastOnline = utils.Now()
 }
 
 // RecordFailure will create a new 'Failure' record in the database for a offline service
